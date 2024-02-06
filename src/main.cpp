@@ -3,6 +3,8 @@
 #include <ESPUI.h>
 #include <WiFi.h>
 #include <EEPROM.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
@@ -22,7 +24,26 @@ uint16_t wifiNameLableID;
 uint16_t wifiPassLableID;
 uint16_t buttonWifiUpdateID;
 
+const PROGMEM char *MQTT_CLIENT_ID = "ESP_Temperature_Sensor";
+const PROGMEM char *MQTT_SERVER_IP = "192.168.31.178";
+const PROGMEM uint16_t MQTT_SERVER_PORT = 1883;
+const PROGMEM char *MQTT_USER = "mqtt_sender";
+const PROGMEM char *MQTT_PASSWORD = "1234";
+
+// MQTT: topics
+const PROGMEM char *MQTT_LIGHT_STATE_TOPIC = "outdoor/humidity/sensor1";
+
+WiFiClient wifiClient;
+PubSubClient client(wifiClient);
+
 const uint16_t EEPROM_SIZE = 256;
+
+unsigned long reconnectTime = 0;
+void publishSensorState();
+void publishHumidity();
+
+const uint8_t MSG_BUFFER_SIZE = 60;
+char msg_buffer[MSG_BUFFER_SIZE];
 
 bool connectToWifi();
 void initAp();
@@ -30,12 +51,14 @@ void EEPROMUpdate(int const address, uint8_t const value);
 void saveWifiInfo(uint8_t wifiWork, char sta_ssid[32], char sta_password[64]);
 void readWifiInfo();
 void initDNS();
+void connectToMQTT();
+
+void mqtt_callback(char *p_topic, byte *p_payload, unsigned int p_length);
 
 void wifiButtonUpdateCallback(Control *sender, int type)
 {
     if (type == B_UP)
     {
-        Serial.println("Button UP");
         char *ssid;
         int stringLength;
         stringLength = ESPUI.getControl(wifiNameLableID)->value.length() + 1;
@@ -47,9 +70,8 @@ void wifiButtonUpdateCallback(Control *sender, int type)
         pass = (char *)calloc(stringLength, sizeof(char));
         ESPUI.getControl(wifiPassLableID)->value.toCharArray(pass, stringLength);
         saveWifiInfo(1, ssid, pass);
-        Serial.println(EEPROM.read(0));
-
-
+        readWifiInfo();
+        connectToWifi();
         free(ssid);
         free(pass);
     }
@@ -97,6 +119,10 @@ void setup(void)
         ControlType::Button, "Update Wifi", "Press", ControlColor::Peterriver, Control::noParent, &wifiButtonUpdateCallback);
 
     ESPUI.begin("Dashboard");
+
+    client.setServer(MQTT_SERVER_IP, MQTT_SERVER_PORT);
+    client.setCallback(mqtt_callback);
+    connectToMQTT();
 }
 
 void loop(void)
@@ -196,4 +222,54 @@ void readWifiInfo()
         index2++;
         index1++;
     }
+}
+
+void mqtt_callback(char *p_topic, byte *p_payload, unsigned int p_length)
+{
+}
+
+void connectToMQTT()
+{
+    // Loop until connection lost
+    while (!client.connected())
+    {
+        Serial.println("connect to MQTT server");
+        // try to connect
+        if (millis() - reconnectTime < 0)
+        { // if internal timer(millis) leaked and reset after 50 days
+            reconnectTime = 0;
+        }
+        if (millis() - reconnectTime > 3000)
+        {
+            if (client.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD))
+            {
+                Serial.println("connected");
+
+                // Once connected, publish an announcement...
+                // publish the initial values
+                publishSensorState();
+                publishHumidity();
+
+                // ... and resubscribe
+            }
+            else
+            {
+                Serial.print("Error:");
+                Serial.println(client.state());
+                Serial.println("reconnect in 3 seconds");
+                reconnectTime = millis();
+            }
+        }
+    }
+}
+
+void publishSensorState(){}
+void publishHumidity()
+{
+    DynamicJsonDocument jsonDocument(20);
+    jsonDocument["humidity"] = 60;
+    String jsonString;
+    serializeJson(jsonDocument, jsonString);
+    jsonString.toCharArray(msg_buffer, 20);
+    client.publish(MQTT_LIGHT_STATE_TOPIC, msg_buffer, true);
 }
